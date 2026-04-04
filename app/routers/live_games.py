@@ -141,16 +141,19 @@ async def create_live_game(
     session.add(game)
     await session.flush()
 
+    # Keep explicit references — do not use `game.players` here: lazy-loading that
+    # relationship on AsyncSession raises MissingGreenlet → 500.
+    added_players: list[LiveGamePlayer] = []
     for row in body.players:
-        session.add(
-            LiveGamePlayer(
-                live_game_id=game.id,
-                client_player_id=row.client_player_id,
-                email=row.email,
-                display_name=row.display_name.strip()[:200],
-                buy_in_coins=body.initial_buy_in_coins,
-            )
+        lp = LiveGamePlayer(
+            live_game_id=game.id,
+            client_player_id=row.client_player_id,
+            email=row.email,
+            display_name=row.display_name.strip()[:200],
+            buy_in_coins=body.initial_buy_in_coins,
         )
+        session.add(lp)
+        added_players.append(lp)
 
     for row in body.players:
         ev = LiveGameBuyInEvent(
@@ -165,7 +168,7 @@ async def create_live_game(
         session.add(ev)
 
     await session.flush()
-    await _sync_player_buy_ins_from_db_events(session, game.id, list(game.players))
+    await _sync_player_buy_ins_from_db_events(session, game.id, added_players)
 
     group.updated_at = now
     await session.commit()
