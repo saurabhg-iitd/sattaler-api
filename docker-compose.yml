@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sattaler-postgres
+    environment:
+      POSTGRES_USER: sattaler
+      POSTGRES_PASSWORD: "satta@ler"
+      POSTGRES_DB: sattaler
+    ports:
+      - "5432:5432"
+    volumes:
+      - sattaler_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sattaler -d sattaler"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sattaler_pgdata:
