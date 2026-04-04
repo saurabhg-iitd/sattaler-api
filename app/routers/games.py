@@ -33,7 +33,7 @@ def _session_profit_rupees(
     *,
     two_player_table_initial_buy_in: int | None = None,
 ) -> float:
-    """P&L in rupees; head-to-head uses one ±initial bump when peer stake exists."""
+    """P&L in rupees; 2p uses ±initial when peer stake exists; 3+ is chip vs buy-in only."""
     chip_delta = remaining - buy_in
     chip_cash = float(chip_delta) * rupees_per_coin
     extra = stake_lent - stake_borrowed
@@ -42,7 +42,7 @@ def _session_profit_rupees(
     if player_count == 2 and two_player_table_initial_buy_in is not None:
         sign = 1.0 if chip_delta >= 0 else -1.0
         return chip_cash + sign * float(two_player_table_initial_buy_in) * rupees_per_coin
-    return chip_cash + 2.0 * float(extra) * rupees_per_coin
+    return chip_cash
 
 
 def _two_player_table_initial_buy_in(lines: list[GamePlayerResult]) -> int | None:
@@ -237,22 +237,12 @@ def _my_profit_for_game(game: Game, user_email: str) -> float | None:
 
 
 async def load_accessible_groups(session: AsyncSession, user: User) -> list[PlayerGroup]:
-    from sqlalchemy import or_
+    from app.group_access import accessible_groups_where_clause
 
-    from app.models import GroupMember
-
-    me = normalize_email(user.email)
-    member_group_ids = select(GroupMember.group_id).where(GroupMember.email == me)
     result = await session.execute(
         select(PlayerGroup)
         .options(selectinload(PlayerGroup.member_rows))
-        .where(
-            or_(
-                PlayerGroup.owner_id == user.id,
-                PlayerGroup.id.in_(member_group_ids),
-                PlayerGroup.members.contains([me]),
-            )
-        )
+        .where(accessible_groups_where_clause(user))
     )
     return list(result.scalars().unique().all())
 

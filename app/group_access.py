@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -37,8 +37,8 @@ def my_role_for_group(group: PlayerGroup, user: User) -> str:
         return "owner"
     me = normalize_email(user.email)
     for r in group.member_rows:
-        if r.email == me and r.role == "member":
-            return "member"
+        if r.user_id == user.id or r.email == me:
+            return r.role if r.role in ("owner", "member") else "member"
     return "member"
 
 
@@ -47,10 +47,26 @@ def can_access_group(group: PlayerGroup, user: User) -> bool:
         return True
     me = normalize_email(user.email)
     for r in group.member_rows:
-        if r.email == me:
+        if r.email == me or r.user_id == user.id:
             return True
     legacy = [normalize_email(x) for x in _legacy_member_strings(group)]
     return me in legacy
+
+
+def accessible_groups_where_clause(user: User):
+    """SQL filter: groups the user owns or is a member of (by email or linked user_id)."""
+    me = normalize_email(user.email)
+    member_group_ids = select(GroupMember.group_id).where(
+        or_(
+            GroupMember.email == me,
+            GroupMember.user_id == user.id,
+        )
+    )
+    return or_(
+        PlayerGroup.owner_id == user.id,
+        PlayerGroup.id.in_(member_group_ids),
+        PlayerGroup.members.contains([me]),
+    )
 
 
 def group_to_out(group: PlayerGroup, user: User) -> GroupOut:

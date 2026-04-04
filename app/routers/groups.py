@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,13 +10,14 @@ from app.database import get_session
 from app.deps import get_current_user
 from app.email_norm import normalize_email
 from app.group_access import (
+    accessible_groups_where_clause,
     can_access_group,
     get_group_eager,
     group_to_out,
     member_emails_for_api,
     replace_member_rows,
 )
-from app.models import GroupMember, PlayerGroup, User
+from app.models import PlayerGroup, User
 from app.schemas import GroupCreate, GroupMemberUpiMapOut, GroupOut, GroupUpdate, MemberUpiEntry
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -27,18 +28,10 @@ async def list_groups(
     session: AsyncSession = Depends(get_session),
     current: User = Depends(get_current_user),
 ) -> list[GroupOut]:
-    me = normalize_email(current.email)
-    member_group_ids = select(GroupMember.group_id).where(GroupMember.email == me)
     result = await session.execute(
         select(PlayerGroup)
         .options(selectinload(PlayerGroup.member_rows))
-        .where(
-            or_(
-                PlayerGroup.owner_id == current.id,
-                PlayerGroup.id.in_(member_group_ids),
-                PlayerGroup.members.contains([me]),
-            )
-        )
+        .where(accessible_groups_where_clause(current))
         .order_by(PlayerGroup.updated_at.desc())
     )
     groups = list(result.scalars().unique().all())
