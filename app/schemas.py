@@ -63,8 +63,19 @@ class GroupOut(BaseModel):
 class GameLineIn(BaseModel):
     email: EmailStr | None = None
     display_name: str = Field(min_length=1, max_length=200)
-    buy_in_coins: int = Field(ge=0)
+    # Can be negative when repeated player→player loans leave a net creditor on the book.
+    buy_in_coins: int = Field(ge=-1_000_000, le=1_000_000)
     remaining_coins: int = Field(ge=0)
+    stake_lent_coins: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("stake_lent_coins", "stakeLentCoins"),
+    )
+    stake_borrowed_coins: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=AliasChoices("stake_borrowed_coins", "stakeBorrowedCoins"),
+    )
 
     @field_validator("email", mode="before")
     @classmethod
@@ -85,6 +96,8 @@ class GameLineOut(BaseModel):
     display_name: str
     buy_in_coins: int
     remaining_coins: int
+    stake_lent_coins: int = 0
+    stake_borrowed_coins: int = 0
     profit_rupees: float
 
     model_config = {"from_attributes": True}
@@ -164,3 +177,95 @@ class UserOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --- Live games (in-progress tables, synced from the app) ---
+
+BuyInEventKind = Literal["initial", "bank", "player_transfer"]
+InitialBuyInSource = Literal["bank", "player_transfer"]
+
+
+class LiveGamePlayerStartIn(BaseModel):
+    client_player_id: str = Field(min_length=1, max_length=80)
+    display_name: str = Field(min_length=1, max_length=200)
+    email: EmailStr | None = None
+    initial_buy_in_source: InitialBuyInSource = "bank"
+    from_client_player_id: str | None = Field(default=None, max_length=80)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _norm_email(cls, v: object) -> object:
+        if v is None or v == "":
+            return None
+        return normalize_email(str(v))
+
+
+class LiveGameCreate(BaseModel):
+    rupees_per_coin: float = Field(gt=0)
+    initial_buy_in_coins: int = Field(gt=0)
+    players: list[LiveGamePlayerStartIn] = Field(min_length=2)
+
+
+class LiveGamePlayerStateIn(BaseModel):
+    client_player_id: str = Field(min_length=1, max_length=80)
+    # Ignored: server derives buy-in from [live_game_buy_in_events] only.
+    buy_in_coins: int | None = Field(default=None, ge=-1_000_000, le=1_000_000)
+
+
+class LiveGameBuyInEventIn(BaseModel):
+    event_kind: BuyInEventKind
+    target_client_player_id: str = Field(min_length=1, max_length=80)
+    coins: int = Field(gt=0)
+    from_client_player_id: str | None = Field(default=None, max_length=80)
+
+
+class LiveGamePatch(BaseModel):
+    players: list[LiveGamePlayerStateIn] = Field(min_length=1)
+    events: list[LiveGameBuyInEventIn] = Field(default_factory=list)
+
+
+class LiveGamePlayerOut(BaseModel):
+    client_player_id: str
+    email: str | None
+    display_name: str
+    buy_in_coins: int
+
+    model_config = {"from_attributes": True}
+
+
+class LiveGameBuyInEventOut(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    event_kind: str
+    target_client_player_id: str
+    coins: int
+    from_client_player_id: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class LiveGameOut(BaseModel):
+    id: uuid.UUID
+    group_id: uuid.UUID
+    rupees_per_coin: float
+    initial_buy_in_coins: int
+    created_at: datetime
+    updated_at: datetime
+    players: list[LiveGamePlayerOut]
+    buy_in_events: list[LiveGameBuyInEventOut]
+
+    model_config = {"from_attributes": True}
+
+
+class LiveGameSummaryOut(BaseModel):
+    """Row for Play tab: other devices / same account can see tables in progress."""
+
+    id: uuid.UUID
+    group_id: uuid.UUID
+    group_name: str
+    rupees_per_coin: float
+    initial_buy_in_coins: int
+    player_count: int
+    total_buy_in_coins: int
+    updated_at: datetime
+    created_at: datetime

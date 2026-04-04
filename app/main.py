@@ -6,15 +6,15 @@ from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.database import Base, engine
-# from app.schema_patches import apply_postgres_schema_patches
-from app.routers import auth, games, groups, me
+from app.schema_patches import apply_postgres_schema_patches
+from app.routers import auth, games, groups, live_games, me
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # await apply_postgres_schema_patches(conn)
+        await apply_postgres_schema_patches(conn)
     yield
 
 
@@ -38,6 +38,10 @@ app = FastAPI(
         {"name": "auth", "description": "Google sign-in and session"},
         {"name": "groups", "description": "Player groups (JWT required)"},
         {"name": "games", "description": "Saved games per group (JWT required)"},
+        {
+            "name": "live-games",
+            "description": "In-progress tables synced from the app (JWT required)",
+        },
         {"name": "me", "description": "Current user stats (JWT required)"},
     ],
 )
@@ -60,6 +64,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(groups.router)
 app.include_router(games.router)
+app.include_router(live_games.router)
 app.include_router(me.router)
 
 

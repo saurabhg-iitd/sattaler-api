@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -10,7 +10,7 @@ from app.database import get_session
 from app.deps import get_current_user
 from app.email_norm import normalize_email
 from app.group_access import can_access_group, get_group_eager
-from app.models import Game, GamePlayerResult, PlayerGroup, User
+from app.models import Game, GamePlayerResult, LiveGame, PlayerGroup, User
 from app.schemas import (
     DashboardOut,
     GameCreate,
@@ -23,8 +23,34 @@ from app.schemas import (
 router = APIRouter(prefix="/groups", tags=["games"])
 
 
-def _line_profit_rupees(buy_in: int, remaining: int, rupees_per_coin: float) -> float:
-    return float(remaining - buy_in) * rupees_per_coin
+def _session_profit_rupees(
+    buy_in: int,
+    remaining: int,
+    rupees_per_coin: float,
+    stake_lent: int,
+    stake_borrowed: int,
+    player_count: int,
+    *,
+    two_player_table_initial_buy_in: int | None = None,
+) -> float:
+    """P&L in rupees; head-to-head uses one ±initial bump when peer stake exists."""
+    chip_delta = remaining - buy_in
+    chip_cash = float(chip_delta) * rupees_per_coin
+    extra = stake_lent - stake_borrowed
+    if extra == 0:
+        return chip_cash
+    if player_count == 2 and two_player_table_initial_buy_in is not None:
+        sign = 1.0 if chip_delta >= 0 else -1.0
+        return chip_cash + sign * float(two_player_table_initial_buy_in) * rupees_per_coin
+    return chip_cash + 2.0 * float(extra) * rupees_per_coin
+
+
+def _two_player_table_initial_buy_in(lines: list[GamePlayerResult]) -> int | None:
+    """Min per-player bank-only book when exactly two lines (equal-start tables)."""
+    if len(lines) != 2:
+        return None
+    adjs = [ln.buy_in_coins + ln.stake_lent_coins - ln.stake_borrowed_coins for ln in lines]
+    return min(adjs)
 
 
 def _email_local_part(email: str) -> str:
@@ -63,6 +89,8 @@ async def _users_by_email_map(session: AsyncSession, emails: list[str]) -> dict[
 
 def game_to_out(game: Game) -> GameOut:
     lines = sorted(game.lines, key=lambda x: x.display_name.lower())
+    n = len(lines)
+    two_p_init = _two_player_table_initial_buy_in(lines)
     return GameOut(
         id=game.id,
         group_id=game.group_id,
@@ -75,10 +103,16 @@ def game_to_out(game: Game) -> GameOut:
                 display_name=ln.display_name,
                 buy_in_coins=ln.buy_in_coins,
                 remaining_coins=ln.remaining_coins,
-                profit_rupees=_line_profit_rupees(
+                stake_lent_coins=ln.stake_lent_coins,
+                stake_borrowed_coins=ln.stake_borrowed_coins,
+                profit_rupees=_session_profit_rupees(
                     ln.buy_in_coins,
                     ln.remaining_coins,
                     game.rupees_per_coin,
+                    ln.stake_lent_coins,
+                    ln.stake_borrowed_coins,
+                    n,
+                    two_player_table_initial_buy_in=two_p_init,
                 ),
             )
             for ln in lines
@@ -145,8 +179,12 @@ async def create_group_game(
                 display_name=display,
                 buy_in_coins=row.buy_in_coins,
                 remaining_coins=row.remaining_coins,
+                stake_lent_coins=row.stake_lent_coins,
+                stake_borrowed_coins=row.stake_borrowed_coins,
             )
         )
+    # Completed game is archived: remove any in-progress live tables for this group.
+    await session.execute(delete(LiveGame).where(LiveGame.group_id == group_id))
     group.updated_at = datetime.now(timezone.utc)
     await session.commit()
     result = await session.execute(
@@ -181,9 +219,20 @@ async def get_group_game(
 
 def _my_profit_for_game(game: Game, user_email: str) -> float | None:
     me = normalize_email(user_email)
-    for ln in game.lines:
+    lines = list(game.lines)
+    n = len(lines)
+    two_p_init = _two_player_table_initial_buy_in(lines)
+    for ln in lines:
         if ln.email and normalize_email(ln.email) == me:
-            return _line_profit_rupees(ln.buy_in_coins, ln.remaining_coins, game.rupees_per_coin)
+            return _session_profit_rupees(
+                ln.buy_in_coins,
+                ln.remaining_coins,
+                game.rupees_per_coin,
+                ln.stake_lent_coins,
+                ln.stake_borrowed_coins,
+                n,
+                two_player_table_initial_buy_in=two_p_init,
+            )
     return None
 
 
