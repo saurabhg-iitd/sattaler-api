@@ -208,8 +208,26 @@ class LiveGameCreate(BaseModel):
 
 class LiveGamePlayerStateIn(BaseModel):
     client_player_id: str = Field(min_length=1, max_length=80)
+    """Required in PATCH when introducing a new [client_player_id] mid-game."""
+    display_name: str | None = Field(default=None, max_length=200)
+    email: EmailStr | None = None
     # Ignored: server derives buy-in from [live_game_buy_in_events] only.
     buy_in_coins: int | None = Field(default=None, ge=-1_000_000, le=1_000_000)
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def _strip_display_patch(cls, v: object) -> object:
+        if v is None or v == "":
+            return None
+        s = str(v).strip()
+        return s if s else None
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _norm_email_patch_player(cls, v: object) -> object:
+        if v is None or v == "":
+            return None
+        return normalize_email(str(v))
 
 
 class LiveGameBuyInEventIn(BaseModel):

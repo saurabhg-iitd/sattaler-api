@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_session
+from app.email_norm import normalize_email
 from app.live_game_buyin import buy_in_totals_from_events
 from app.deps import get_current_user
 from app.group_access import can_access_group, get_group_eager
@@ -229,15 +230,49 @@ async def patch_live_game(
 ) -> LiveGameOut:
     game = await _get_live_game_owned(session, group_id, live_game_id, current)
     by_client = {p.client_player_id: p for p in game.players}
-    known_ids = set(by_client.keys())
-    _validate_patch_events(body.events, known_ids)
 
+    seen_patch_ids: set[str] = set()
     for row in body.players:
-        if by_client.get(row.client_player_id) is None:
+        if row.client_player_id in seen_patch_ids:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unknown client_player_id: {row.client_player_id}",
+                detail="Duplicate client_player_id in players",
             )
+        seen_patch_ids.add(row.client_player_id)
+
+    for row in body.players:
+        lp = by_client.get(row.client_player_id)
+        if lp is None:
+            dn = (row.display_name or "").strip()
+            if not dn:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "display_name is required when adding a new player "
+                        f"(client_player_id={row.client_player_id})"
+                    ),
+                )
+            em: str | None = row.email
+            lp = LiveGamePlayer(
+                live_game_id=game.id,
+                client_player_id=row.client_player_id,
+                display_name=dn[:200],
+                email=em,
+                buy_in_coins=0,
+            )
+            session.add(lp)
+            by_client[row.client_player_id] = lp
+        else:
+            if row.display_name and (row.display_name or "").strip():
+                lp.display_name = str(row.display_name).strip()[:200]
+            if row.email is not None:
+                raw_e = str(row.email).strip() if row.email else ""
+                lp.email = normalize_email(raw_e) if raw_e else None
+
+    await session.flush()
+
+    known_ids = set(by_client.keys())
+    _validate_patch_events(body.events, known_ids)
 
     now = datetime.now(timezone.utc)
     for ev in body.events:
@@ -251,7 +286,11 @@ async def patch_live_game(
             )
         )
     await session.flush()
-    await _sync_player_buy_ins_from_db_events(session, game.id, list(game.players))
+    pl_res = await session.execute(
+        select(LiveGamePlayer).where(LiveGamePlayer.live_game_id == game.id),
+    )
+    all_players = list(pl_res.scalars().all())
+    await _sync_player_buy_ins_from_db_events(session, game.id, all_players)
 
     game.updated_at = now
     grp = await session.get(PlayerGroup, group_id)
