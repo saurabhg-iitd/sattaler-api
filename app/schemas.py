@@ -181,7 +181,7 @@ class UserOut(BaseModel):
 
 # --- Live games (in-progress tables, synced from the app) ---
 
-BuyInEventKind = Literal["initial", "bank", "player_transfer"]
+BuyInEventKind = Literal["initial", "bank", "bank_return", "player_transfer"]
 InitialBuyInSource = Literal["bank", "player_transfer"]
 
 

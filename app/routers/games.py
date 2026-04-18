@@ -217,6 +217,32 @@ async def get_group_game(
     return game_to_out(game)
 
 
+@router.delete("/{group_id}/games/{game_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_group_game(
+    group_id: uuid.UUID,
+    game_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    current: User = Depends(get_current_user),
+) -> None:
+    group = await get_group_eager(session, group_id)
+    if group is None or not can_access_group(group, current):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Group not found")
+    if group.owner_id != current.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the group owner can delete saved games",
+        )
+    result = await session.execute(
+        select(Game).where(Game.id == game_id, Game.group_id == group_id),
+    )
+    game = result.scalar_one_or_none()
+    if game is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Game not found")
+    await session.delete(game)
+    group.updated_at = datetime.now(timezone.utc)
+    await session.commit()
+
+
 def _my_profit_for_game(game: Game, user_email: str) -> float | None:
     me = normalize_email(user_email)
     lines = list(game.lines)

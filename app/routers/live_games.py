@@ -64,6 +64,12 @@ def _validate_patch_events(events: list[LiveGameBuyInEventIn], known_ids: set[st
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Unknown from_client_player_id: {ev.from_client_player_id}",
                 )
+        elif ev.event_kind in ("bank", "bank_return"):
+            if ev.from_client_player_id is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{ev.event_kind} events must not set from_client_player_id",
+                )
 
 
 def _live_game_to_out(game: LiveGame) -> LiveGameOut:
@@ -291,6 +297,16 @@ async def patch_live_game(
     )
     all_players = list(pl_res.scalars().all())
     await _sync_player_buy_ins_from_db_events(session, game.id, all_players)
+    for p in all_players:
+        if p.buy_in_coins < 0:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Buy-in ledger would go negative for at least one player "
+                    f"(e.g. client_player_id={p.client_player_id}). Check return/transfer amounts."
+                ),
+            )
 
     game.updated_at = now
     grp = await session.get(PlayerGroup, group_id)

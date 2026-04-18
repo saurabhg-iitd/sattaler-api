@@ -9,3 +9,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+sattaler/
+.DS_Store
+.gitignore
+app/.DS_Store
